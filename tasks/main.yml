@@ -1,0 +1,136 @@
+---
+# tasks file for helloworld2
+
+- debug: var=ansible_python_version verbosity=1
+- debug: var=ansible_processor_vcpus verbosity=1
+- debug: var=ansible_memtotal_mb verbosity=1
+- debug:
+    msg: "Memory Free is {{ ansible_memfree_mb }}"
+- debug: var=ansible_distribution verbosity=1
+- debug: var=ansible_kernel verbosity=1
+- debug: var=ansible_dns verbosity=1
+- debug:
+    msg: "Interface information {{ item }} {{ hostvars[inventory_hostname]['ansible_'+item] }}"
+  with_items: "{{ ansible_interfaces }}"
+
+- name: Find remote host virtualization type
+  local_action:
+    module: debug
+    msg: "Remote host virtualization type {{ hostvars[inventory_hostname]['ansible_virtualization_type'] }}"
+
+
+- debug: msg="Starting tasks from helloworld2..."
+- debug: var=HW2_TARBALL_URL verbosity=1
+
+- name: "Make sure GitHub is accessible"
+  local_action:
+    module: uri
+    url: "{{ HW2_TARBALL_URL }}"
+    status_code: 200
+  register: result
+  until: result.status == 200
+  retries: 3
+  delay: 1
+
+- debug: var=HW2_TMP_PATH verbosity=1
+
+- name: Make sure local tmp path exists
+  local_action:
+    module: file
+    path: "{{ HW2_TMP_PATH }}"
+    state: directory
+
+#- name: Get the checksum of the source tar file
+#  local_action:
+#    module: get_url
+#    url: "{{ HW2_TARBALL_URL }}"
+#  register: get_url_output
+#- debug: var=get_url_output.checksum_src verbosity=1
+
+- name: Download tarball from GitHub
+  local_action:
+    module: get_url
+    url: "{{ HW2_TARBALL_URL }}"
+    dest: "{{ HW2_TMP_PATH }}"
+    checksum: "md5:{{ HW2_TARBALL_CHKSUM }}"
+    mode: 0600
+  register: get_url_output
+
+- debug: var=get_url_output.dest var=get_url_output.checksum_src var=get_url_output.checksum_dest verbosity=1
+- debug: var=HW2_TARBALL_CHKSUM
+- debug: var=HW2_DEPLOY_PATH verbosity=1
+
+- name: Get md5sum of downloaded tarball
+  local_action:
+    module: command /usr/bin/md5sum "{{ get_url_output.dest }}"
+    #command: /usr/bin/md5sum "{{ HW2_TMP_PATH }}"
+  register: md5sum_result
+
+- debug: var=md5sum_result.stdout verbosity=1
+
+- name: Make sure remote tmp path exists
+  file:
+    path: "{{ HW2_DEPLOY_PATH }}"
+    state: directory
+
+- name: "Copy tarball to remote and unpack it"
+  unarchive:
+    src: "{{ get_url_output.dest }}"
+    dest: "{{ HW2_DEPLOY_PATH }}/"
+    mode: 0600
+
+- name: Deploy service template for hw2
+  template:
+    src: templates/hw2.service.j2
+    dest: /etc/systemd/system/hw2.service
+
+- name: Run systemctl reload
+  command: systemctl daemon-reload
+  when: HW2_DOCKER_TEST == False
+
+- name: Install cronie latest
+  package:
+    name: cronie
+    state: latest
+
+- name: enable and start service hw2
+  service:
+    name: hw2
+    state: start
+    enable: yes
+  when: HW2_DOCKER_TEST == False
+
+- debug: var=HW2_DEBUG verbosity=1
+- debug: var=HW2_PORT verbosity=1
+- debug: var=HW2_SERVICE_NAME verbosity=1
+- debug: var=HW2_CONFIG_PATH verbosity=1
+
+- name: Install crontab for service hw2 nightly restart
+  cron:
+    name: hw2_restart
+    cron_file: /etc/cron.d/hw2_restart
+    user: root
+    minute: 34
+    hour: 00
+    job: '/usr/bin/systemctl restart hw2'
+
+- name: Task to start service HW2
+  wait_for:
+      delay: 30
+      port: "{{HW2_PORT}}"
+  when: HW2_DOCKER_TEST == False
+
+- name: Install yamlint
+  pip:
+    name: yamllint
+
+- name: deploy config using template
+  template:
+    src: templates/config.yml.j2
+    dest: "{{ HW2_CONFIG_PATH }}"
+    validate: /usr/bin/yamllint %s
+
+- debug: var=HW2_CONFIG_NAME verbosity=1
+- debug: var=HW2_CONFIG_TZ verbosity=1
+- debug: var=HW2_CONFIG_TITLE verbosity=1
+- debug: var=HW2_CONFIG_SALUTATION verbosity=1
